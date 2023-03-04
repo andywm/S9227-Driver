@@ -8,12 +8,71 @@ struct Pins
   static constexpr int Clock {0};
 };
 
+struct Config
+{
+  static constexpr int ClockInterval {0};
+
+  struct PulseCycle
+  {
+    static constexpr int StartPulseCycleInterval {0};
+    static constexpr int HighPeriodTriggerClock {0};
+    static constexpr int LowPeriodTriggerClock {0};
+    static constexpr int VideoReadPhase {0};
+  };
+};
+
+enum StateFlags
+{
+  START_PULSE_CYCLE = 0x1 << 0,
+  HIGH_PERIOD_EDGE_HANDLED = 0x1 << 1,
+  LOW_PERIOD_EDGE_HANDLED = 0x1 << 2,
+};
+
 void setup() 
 {
   pinMode(Pins::VideoSignal, INPUT);
   pinMode(Pins::EndOfScan, INPUT);
   pinMode(Pins::StartTrigger, OUTPUT);
   pinMode(Pins::Clock, OUTPUT);
+}
+
+void Spin(int)
+{
+
+}
+
+void ExecuteStartPulseCycle()
+{
+  int Clocks = 0;
+  bool EndOfScan = false;
+  bool StartPulseCycle = true;
+  bool HighPeriodTriggered = false;
+  bool LowPeriodTriggered = false;
+  bool VideoPeriodTriggered = false;
+
+  while(!EndOfScan)
+  {
+    digitalWrite(Pins::Clock, HIGH);
+
+    if (StartPulseCycle)
+    {
+      //Begin Intrgration
+      if (Clocks == Config::PulseCycle::HighPeriodTriggerClock)
+      {
+        digitalWrite(Pins::StartTrigger, HIGH);
+      }
+      if (Clocks == Config::PulseCycle::LowPeriodTriggerClock)
+      {
+        digitalWrite(Pins::StartTrigger, LOW);
+      }
+    }
+
+    if (Clocks > Config::PulseCycle::VideoReadPhase)
+    {
+       EndOfScan = digitalRead(Pins::EndOfScan);
+    }
+  };
+
 }
 
 void loop() 
