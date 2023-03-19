@@ -1,19 +1,46 @@
 #include <Arduino.h>
 
-struct Pins
+struct PinDef
 {
-  static constexpr int VideoSignal {0};  
-  static constexpr int EndOfScan {0};
-  static constexpr int StartTrigger {0};
-  static constexpr int Clock {0};
+  PinDef(int pin)
+    :Pin(pin)
+  {
+    if( pin < 8)
+    {
+      Mask = 0x1 << pin;
+    }
+    else if( pin < 14)
+    {
+      Mask = 0x1 << (pin-8);
+    }
+      else if( pin < A7)
+    {
+      Mask = 0x1 << (pin-16);
+    }
+  }
+
+  int8_t Pin;
+  int8_t Mask;
 };
+
+struct Pins_
+{
+  PinDef VideoSignal {A0};  
+  PinDef EndOfScan {1};
+  PinDef StartTrigger {2};
+  PinDef Clock {3};
+} Pins;
 
 struct Config
 {
   static constexpr int ClockInterval {0};
-
+  static constexpr int IntegrationClocks {530};
+  static constexpr int IntegrationZero {0};
+  static constexpr int IntegrationLowPhase {0};
   struct PulseCycle
   {
+    static constexpr int IntegreationEnd {0};
+
     static constexpr int StartPulseCycleInterval {0};
     static constexpr int HighPeriodTriggerClock {0};
     static constexpr int LowPeriodTriggerClock {0};
@@ -21,19 +48,12 @@ struct Config
   };
 };
 
-enum StateFlags
-{
-  START_PULSE_CYCLE = 0x1 << 0,
-  HIGH_PERIOD_EDGE_HANDLED = 0x1 << 1,
-  LOW_PERIOD_EDGE_HANDLED = 0x1 << 2,
-};
-
 void setup() 
 {
-  pinMode(Pins::VideoSignal, INPUT);
-  pinMode(Pins::EndOfScan, INPUT);
-  pinMode(Pins::StartTrigger, OUTPUT);
-  pinMode(Pins::Clock, OUTPUT);
+  pinMode(Pins.VideoSignal.Pin, INPUT);
+  pinMode(Pins.EndOfScan.Pin, INPUT);
+  pinMode(Pins.StartTrigger.Pin, OUTPUT);
+  pinMode(Pins.Clock.Pin, OUTPUT);
 }
 
 void Spin(int)
@@ -43,36 +63,83 @@ void Spin(int)
 
 void ExecuteStartPulseCycle()
 {
-  int Clocks = 0;
-  bool EndOfScan = false;
-  bool StartPulseCycle = true;
-  bool HighPeriodTriggered = false;
-  bool LowPeriodTriggered = false;
-  bool VideoPeriodTriggered = false;
+  //int Clocks = 0;
+  //bool EndOfScan = false;
+  //bool StartPulseCycle = true;
+  //bool HighPeriodTriggered = false;
+  //bool LowPeriodTriggered = false;
+  //bool VideoPeriodTriggered = false;
+//
+  //while(!EndOfScan)
+  //{
+  //  digitalWrite(Pins.Clock, LOW);
+//
+  //  if (StartPulseCycle)
+  //  {
+  //    //Begin Intrgration
+  //    if (Clocks == Config::PulseCycle::HighPeriodTriggerClock)
+  //    {
+  //      digitalWrite(Pins::StartTrigger, HIGH);
+  //    }
+  //    if (Clocks == Config::PulseCycle::LowPeriodTriggerClock)
+  //    {
+  //      digitalWrite(Pins::StartTrigger, LOW);
+  //      break;
+  //    }
+  //  }
+//
+  //  if (Clocks > Config::PulseCycle::VideoReadPhase)
+  //  {
+  //     EndOfScan = digitalRead(Pins::EndOfScan);
+  //  }
+  //};
+}
 
-  while(!EndOfScan)
+bool gClockEnable = false;
+bool gVideoRead = false;
+int clocks = 0;
+enum class ClockEdge {LowEdge, Low, HighEdge, High}ClockState;
+void StartPulseCycle()
+{
+  PORTD |= Pins.Clock.Mask;
+  delayMicroseconds(1);
+
+  //set timer.
+  //TIFR0 |= _BV(OCF0A);
+  TIMSK1 |= _BV(OCIE0A);
+
+  //Integration Time
+  bool readComplete = false;
+  while(readComplete == false && clocks < Config::IntegrationClocks)
   {
-    digitalWrite(Pins::Clock, HIGH);
-
-    if (StartPulseCycle)
+    if(gVideoRead)
     {
-      //Begin Intrgration
-      if (Clocks == Config::PulseCycle::HighPeriodTriggerClock)
-      {
-        digitalWrite(Pins::StartTrigger, HIGH);
-      }
-      if (Clocks == Config::PulseCycle::LowPeriodTriggerClock)
-      {
-        digitalWrite(Pins::StartTrigger, LOW);
-      }
+      //adc read
     }
+  }
+}
 
-    if (Clocks > Config::PulseCycle::VideoReadPhase)
-    {
-       EndOfScan = digitalRead(Pins::EndOfScan);
-    }
-  };
-
+ISR (TIMER1_OVF_vect)
+{
+  if(clocks == Config::IntegrationZero)
+  {
+    PORTD |= Pins.StartTrigger.Mask;
+  }
+  else if(clocks == Config::IntegrationLowPhase)
+  {
+    PORTD &= ~Pins.StartTrigger.Mask;
+  }
+  if(gClockEnable)
+  {
+    PORTD |= Pins.Clock.Mask;
+  }
+  else
+  {
+    clocks++;
+    PORTD &= ~Pins.Clock.Mask;
+  }
+    
+  gClockEnable = !gClockEnable; 
 }
 
 void loop() 
