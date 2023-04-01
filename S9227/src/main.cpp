@@ -1,149 +1,3 @@
-#include <Arduino.h>
-
-struct PinDef
-{
-  PinDef(int pin)
-    :Pin(pin)
-  {
-    if( pin < 8)
-    {
-      Mask = 0x1 << pin;
-    }
-    else if( pin < 14)
-    {
-      Mask = 0x1 << (pin-8);
-    }
-      else if( pin < A7)
-    {
-      Mask = 0x1 << (pin-16);
-    }
-  }
-
-  int8_t Pin;
-  int8_t Mask;
-};
-
-struct Pins_
-{
-  PinDef VideoSignal {A0};  
-  PinDef EndOfScan {1};
-  PinDef StartTrigger {2};
-  PinDef Clock {3};
-} Pins;
-
-struct Config
-{
-  static constexpr int ClockInterval {0};
-  static constexpr int IntegrationClocks {530};
-  static constexpr int IntegrationZero {0};
-  static constexpr int IntegrationLowPhase {0};
-  struct PulseCycle
-  {
-    static constexpr int IntegreationEnd {0};
-
-    static constexpr int StartPulseCycleInterval {0};
-    static constexpr int HighPeriodTriggerClock {0};
-    static constexpr int LowPeriodTriggerClock {0};
-    static constexpr int VideoReadPhase {0};
-  };
-};
-
-void setup() 
-{
-  pinMode(Pins.VideoSignal.Pin, INPUT);
-  pinMode(Pins.EndOfScan.Pin, INPUT);
-  pinMode(Pins.StartTrigger.Pin, OUTPUT);
-  pinMode(Pins.Clock.Pin, OUTPUT);
-}
-
-void Spin(int)
-{
-
-}
-
-void ExecuteStartPulseCycle()
-{
-  //int Clocks = 0;
-  //bool EndOfScan = false;
-  //bool StartPulseCycle = true;
-  //bool HighPeriodTriggered = false;
-  //bool LowPeriodTriggered = false;
-  //bool VideoPeriodTriggered = false;
-//
-  //while(!EndOfScan)
-  //{
-  //  digitalWrite(Pins.Clock, LOW);
-//
-  //  if (StartPulseCycle)
-  //  {
-  //    //Begin Intrgration
-  //    if (Clocks == Config::PulseCycle::HighPeriodTriggerClock)
-  //    {
-  //      digitalWrite(Pins::StartTrigger, HIGH);
-  //    }
-  //    if (Clocks == Config::PulseCycle::LowPeriodTriggerClock)
-  //    {
-  //      digitalWrite(Pins::StartTrigger, LOW);
-  //      break;
-  //    }
-  //  }
-//
-  //  if (Clocks > Config::PulseCycle::VideoReadPhase)
-  //  {
-  //     EndOfScan = digitalRead(Pins::EndOfScan);
-  //  }
-  //};
-}
-
-bool gClockEnable = false;
-bool gVideoRead = false;
-int clocks = 0;
-enum class ClockEdge {LowEdge, Low, HighEdge, High}ClockState;
-void StartPulseCycle()
-{
-  PORTD |= Pins.Clock.Mask;
-  delayMicroseconds(1);
-
-  //set timer.
-  //TIFR0 |= _BV(OCF0A);
-  TIMSK1 |= _BV(OCIE0A);
-
-  //Integration Time
-  bool readComplete = false;
-  while(readComplete == false && clocks < Config::IntegrationClocks)
-  {
-    if(gVideoRead)
-    {
-      //adc read
-    }
-  }
-}
-
-ISR (TIMER1_OVF_vect)
-{
-  if(clocks == Config::IntegrationZero)
-  {
-    PORTD |= Pins.StartTrigger.Mask;
-  }
-  else if(clocks == Config::IntegrationLowPhase)
-  {
-    PORTD &= ~Pins.StartTrigger.Mask;
-  }
-  if(gClockEnable)
-  {
-    PORTD |= Pins.Clock.Mask;
-  }
-  else
-  {
-    clocks++;
-    PORTD &= ~Pins.Clock.Mask;
-  }
-    
-  gClockEnable = !gClockEnable; 
-}
-
-void loop() 
-{
   // Timing Diagram
   // https://www.hamamatsu.com/content/dam/hamamatsu-photonics/sites/documents/99_SALES_LIBRARY/ssd/s9227_series_kmpd1122e.pdf
 
@@ -198,6 +52,147 @@ void loop()
    * Occurs 39ns after the falling edge of the last clock of the previos pixel.
    * High for a single clock.
   */
+#include <Arduino.h>
 
+namespace Config
+{
+  static constexpr uint16_t IntegrationClocks {530};
+  static constexpr uint16_t IntegrationLowPhase {500};
+  static constexpr uint16_t IntegrationZero {0};
+  static constexpr uint16_t PixelCount {512};
+};
 
+struct PinDef
+{
+  PinDef(int8_t pin, int8_t portOffset=0)
+	: Pin(pin)
+	, Mask(0x1 << (pin-portOffset))
+	{}
+	int8_t Pin;
+	int8_t Mask;
+};
+
+namespace Pins
+{
+	PinDef VideoSignal {A0, 16};  
+	PinDef EndOfScan {1};
+	PinDef StartTrigger {2};
+	PinDef Clock {3};
+};
+
+struct VideoBuffer
+{
+	uint8_t Buffer[Config::PixelCount];
+	uint16_t BufferIndex{0};
+} gVideoBuffer;
+
+void setup() 
+{
+	pinMode(Pins::VideoSignal.Pin,	INPUT);
+	pinMode(Pins::EndOfScan.Pin,	INPUT);
+	pinMode(Pins::StartTrigger.Pin,	OUTPUT);
+	pinMode(Pins::Clock.Pin,		OUTPUT);
+
+	Serial.begin(9600);
+}
+
+bool gClockEnable = false;
+bool gVideoRead = false;
+uint16_t gVideoReadClock = UINT16_MAX;
+uint16_t gClocks = 0;
+
+void StartPulseCycle()
+{
+	//reset state
+	gClocks = 0;
+	gVideoRead = false;
+	gClockEnable = false;
+	gVideoBuffer.BufferIndex = 0;
+	gVideoReadClock = UINT16_MAX;
+
+	//timer logic begins from falling edge, so ensure when we start the clock
+	//pin is high.
+	PORTD |= Pins::Clock.Mask;
+	delayMicroseconds(1);
+
+	//Timer ~
+	// n.b. manual manipulation of timer1 will largely criple pins 9 and 10.
+	// configure timer.
+	TCCR1A = 0;           //Compare Output Mode - Off
+	TCCR1B = _BV(CS10);   //Compare Match Mode - On, no prescalar.
+
+	//zero the timer.
+	TCNT1H = 0;
+	TCNT1L = 0;
+
+	//enable the timer.
+	TIMSK1 |= _BV(OCIE1A);
+	OCR1A = 161; //trigger at 161 clocks 62ns * 161 ~= 10us.
+
+	//Integration Time
+	while(gVideoBuffer.BufferIndex < Config::PixelCount)
+	{
+		//we also could read the EOS signal here as an additional breakout, but
+		//I'm just going to use the internal pixel counter. 
+		
+		if(gVideoRead)
+		{
+			//configure adc prescalar, low resolution sample.
+			ADCSRA &= ~(_BV(ADPS0)|_BV(ADPS2)|_BV(ADPS2));
+			ADCSRA |= _BV(ADPS0);
+
+			//read adc
+			gVideoBuffer.Buffer[gVideoBuffer.BufferIndex++] = analogRead(Pins::VideoSignal.Pin);
+			gVideoRead = false;
+		}
+	}
+
+	//disable timer.
+	TIMSK1 &= ~_BV(OCIE1A);
+}
+
+ISR (TIMER1_OVF_vect)
+{
+	//integration period
+	if(gClocks == Config::IntegrationZero)
+	{
+		PORTD |= Pins::StartTrigger.Mask;
+	}
+	else if(gClocks == Config::IntegrationLowPhase)
+	{
+		PORTD &= ~Pins::StartTrigger.Mask;
+		gVideoReadClock = gClocks + 14;
+	}
+
+	//clock signal
+	if(gClockEnable)
+	{
+		PORTD |= Pins::Clock.Mask;
+	}
+	else
+	{
+		gClocks++;
+		PORTD &= ~Pins::Clock.Mask;
+
+		//permit pixel read.
+		gVideoRead = gClocks >= gVideoReadClock;
+	}
+
+	TCNT1H = 0;
+	TCNT1L = 0;
+	gClockEnable = !gClockEnable; 
+}
+
+void loop() 
+{
+	StartPulseCycle();
+
+	delayMicroseconds(1000);
+
+	for(uint16_t pixel = 0; pixel < Config::PixelCount; ++pixel )
+	{
+		Serial.println(gVideoBuffer.Buffer[pixel]);
+	}
+
+	delayMicroseconds(1000);
 }
