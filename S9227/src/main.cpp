@@ -57,7 +57,7 @@
 namespace Config
 {
   static constexpr uint16_t IntegrationClocks {530};
-  static constexpr uint16_t IntegrationLowPhase {500};
+  static constexpr uint16_t IntegrationLowPhase {300}; //20
   static constexpr uint16_t IntegrationZero {0};
   static constexpr uint16_t PixelCount {512};
 };
@@ -75,9 +75,9 @@ struct PinDef
 namespace Pins
 {
 	PinDef VideoSignal {A0, 16};  
-	PinDef EndOfScan {1};
-	PinDef StartTrigger {2};
-	PinDef Clock {3};
+	PinDef EndOfScan {2};
+	PinDef StartTrigger {3};
+	PinDef Clock {4};
 };
 
 struct VideoBuffer
@@ -94,6 +94,9 @@ void setup()
 	pinMode(Pins::Clock.Pin,		OUTPUT);
 
 	Serial.begin(9600);
+  	Serial.println("init");
+
+  	delay(1000);
 }
 
 bool gClockEnable = false;
@@ -108,35 +111,40 @@ void StartPulseCycle()
 	gVideoRead = false;
 	gClockEnable = false;
 	gVideoBuffer.BufferIndex = 0;
-	gVideoReadClock = UINT16_MAX;
+	gVideoReadClock = Config::IntegrationLowPhase + 14;
+
 
 	//timer logic begins from falling edge, so ensure when we start the clock
 	//pin is high.
 	PORTD |= Pins::Clock.Mask;
 	delayMicroseconds(1);
 
+	cli();
+
 	//Timer ~
 	// n.b. manual manipulation of timer1 will largely criple pins 9 and 10.
 	// configure timer.
 	TCCR1A = 0;           //Compare Output Mode - Off
-	TCCR1B = _BV(CS10);   //Compare Match Mode - On, no prescalar.
+	TCCR1B &= ~(_BV(CS10)|_BV(CS11)|_BV(CS12));
+	TCCR1B |= _BV(WGM20)|_BV(CS10);   //Compare Match Mode - On, no prescalar.
 
 	//zero the timer.
-	TCNT1H = 0;
-	TCNT1L = 0;
+	TCNT1 = 0;
 
 	//enable the timer.
+	//OCR1A = 161; //trigger at 161 clocks 62ns * 161 ~= 10us.
+	OCR1A = 70; //trigger at 161 clocks 62ns * 161 ~= 10us.
 	TIMSK1 |= _BV(OCIE1A);
-	OCR1A = 161; //trigger at 161 clocks 62ns * 161 ~= 10us.
 
-	//Integration Time
-	while(gVideoBuffer.BufferIndex < Config::PixelCount)
+	sei();
+
+	while(true)
 	{
-		//we also could read the EOS signal here as an additional breakout, but
-		//I'm just going to use the internal pixel counter. 
-		
 		if(gVideoRead)
 		{
+			cli();
+			gVideoRead = false;
+
 			//configure adc prescalar, low resolution sample.
 			ADCSRA &= ~(_BV(ADPS0)|_BV(ADPS2)|_BV(ADPS2));
 			ADCSRA |= _BV(ADPS0);
@@ -144,14 +152,27 @@ void StartPulseCycle()
 			//read adc
 			gVideoBuffer.Buffer[gVideoBuffer.BufferIndex++] = analogRead(Pins::VideoSignal.Pin);
 			gVideoRead = false;
+
+			if(gVideoBuffer.BufferIndex >= Config::PixelCount)
+			{
+				PORTD |= Pins::StartTrigger.Mask;
+				PORTD |= Pins::Clock.Mask;
+				TIMSK1 &= ~_BV(OCIE1A);
+
+				return;
+			}
+
+			sei();
 		}
+		TIMSK1 |= _BV(OCIE1A);
 	}
 
 	//disable timer.
 	TIMSK1 &= ~_BV(OCIE1A);
+	PORTD &= ~Pins::Clock.Mask;
 }
 
-ISR (TIMER1_OVF_vect)
+ISR (TIMER1_COMPA_vect)
 {
 	//integration period
 	if(gClocks == Config::IntegrationZero)
@@ -161,38 +182,50 @@ ISR (TIMER1_OVF_vect)
 	else if(gClocks == Config::IntegrationLowPhase)
 	{
 		PORTD &= ~Pins::StartTrigger.Mask;
-		gVideoReadClock = gClocks + 14;
 	}
 
 	//clock signal
 	if(gClockEnable)
 	{
 		PORTD |= Pins::Clock.Mask;
+		OCR1A = 70;
 	}
 	else
 	{
 		gClocks++;
 		PORTD &= ~Pins::Clock.Mask;
+		OCR1A = 50;
 
 		//permit pixel read.
 		gVideoRead = gClocks >= gVideoReadClock;
 	}
 
-	TCNT1H = 0;
-	TCNT1L = 0;
 	gClockEnable = !gClockEnable; 
+	TCNT1 = 0;
+	TIMSK1 &= ~_BV(OCIE1A);
 }
 
 void loop() 
 {
-	StartPulseCycle();
+  //PORTD |= B00000100;
+  //PORTD |= Pins::Clock.Mask;
+  //digitalWrite(1, HIGH);
+  //digitalWrite(2, HIGH);
+  	//return; 
 
+	StartPulseCycle();
 	delayMicroseconds(1000);
+
+	delay(1000);
 
 	for(uint16_t pixel = 0; pixel < Config::PixelCount; ++pixel )
 	{
-		Serial.println(gVideoBuffer.Buffer[pixel]);
+		Serial.print(gVideoBuffer.Buffer[pixel]);
+		Serial.print(", ");
 	}
-
-	delayMicroseconds(1000);
+	Serial.println("END");
+  	while(true)
+  	{
+		delayMicroseconds(1000);
+	}
 }
